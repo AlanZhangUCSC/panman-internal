@@ -116,7 +116,7 @@ class Pangraph {
         tbb::concurrent_unordered_map< size_t,
         std::vector< std::pair< size_t, size_t > > > > > deletions;
 
-    Pangraph(Json::Value& pangraphData, panmanUtils::Node* node=nullptr, bool legacyChaining = false, bool pgTreeGuided = true);
+    Pangraph(Json::Value& pangraphData, panmanUtils::Node* node=nullptr, bool legacyChaining = false, bool pgTreeGuided = false);
     std::vector< size_t > getTopologicalSort();
     std::unordered_map< std::string,std::vector< int > >
     getAlignedSequences(const std::vector< size_t >& topoArray);

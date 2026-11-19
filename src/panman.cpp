@@ -1103,7 +1103,7 @@ panmanUtils::Tree::Tree(std::ifstream& fin, std::ifstream& secondFin, FILE_TYPE 
         root = createTreeFromNewickString(newickString);
         auto start = std::chrono::high_resolution_clock::now();
 
-        panmanUtils::Pangraph pg(pangraphData, root, pgTreeGuided);
+        panmanUtils::Pangraph pg(pangraphData, root, legacyChaining, pgTreeGuided);
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::nanoseconds timing = end -start;
@@ -7023,6 +7023,7 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
         }
         std::cout << "Adding paths in " << ((pgTreeGuided && root != nullptr) ? "guide-tree" : "hash") << " order" << std::endl;
     }
+
     
     // Rotation
     // Testing data structure

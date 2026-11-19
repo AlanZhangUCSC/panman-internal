@@ -1501,13 +1501,10 @@ void parseAndExecute(int argc, char* argv[]) {
         bool pgTreeGuided = globalVm["pg-tree-guided"].as<bool>();
         bool legacyChaining = globalVm["legacy-chaining"].as<bool>();
 
-        std::cout << "Creating PanMAN from PanGraph and Newick" << std::endl;
-
         std::ifstream inputStream(fileName);
         std::ifstream newickInputStream(newickFileName);
 
         auto treeBuiltStart = std::chrono::high_resolution_clock::now();
-
 
         T = new panmanUtils::Tree(inputStream, newickInputStream,
                                   panmanUtils::FILE_TYPE::PANGRAPH, referenceSequence, "", legacyChaining, pgTreeGuided);
