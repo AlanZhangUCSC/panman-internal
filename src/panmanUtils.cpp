@@ -138,6 +138,8 @@ void setupOptionDescriptions() {
     ("input-msa,M", po::value< std::string >(), "Input MSA file (FASTA format) to build a PanMAN")
     ("input-newick,N", po::value< std::string >(), "Input tree topology as Newick string")
     ("create-network,K",po::value< std::vector<std::string>>(), "Create PanMAN with network of trees from single or multiple PanMAN files")
+    ("pg-tree-guided", po::bool_switch(), "With -P: use guide tree's leaf order for adding Pangraph paths to the block alignment (default hash order)")
+    ("legacy-chaining", po::bool_switch(), "With -P: use legacy chaining algorithm (default new block occupancy-dependent chaining algorithm)")
 
     ("test", "Only for test purposes, not for users")
 
@@ -1496,6 +1498,9 @@ void parseAndExecute(int argc, char* argv[]) {
             referenceSequence = globalVm["reference"].as< std::string >();
         }
 
+        bool pgTreeGuided = globalVm["pg-tree-guided"].as<bool>();
+        bool legacyChaining = globalVm["legacy-chaining"].as<bool>();
+
         std::cout << "Creating PanMAN from PanGraph and Newick" << std::endl;
 
         std::ifstream inputStream(fileName);
@@ -1503,8 +1508,9 @@ void parseAndExecute(int argc, char* argv[]) {
 
         auto treeBuiltStart = std::chrono::high_resolution_clock::now();
 
+
         T = new panmanUtils::Tree(inputStream, newickInputStream,
-                                  panmanUtils::FILE_TYPE::PANGRAPH, referenceSequence);
+                                  panmanUtils::FILE_TYPE::PANGRAPH, referenceSequence, "", legacyChaining, pgTreeGuided);
 
         std::vector<panmanUtils::Tree*> tg;
         tg.push_back(T);

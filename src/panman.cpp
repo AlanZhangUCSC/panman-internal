@@ -812,7 +812,7 @@ std::vector<std::pair<int, char>> parseWalk(const std::string& walkStr) {
 
 
 panmanUtils::Tree::Tree(std::ifstream& fin, std::ifstream& secondFin, FILE_TYPE ftype,
-                        std::string reference, std::string refSeqFile) {
+                        std::string reference, std::string refSeqFile, bool legacyChaining, bool pgTreeGuided) {
     if(ftype == panmanUtils::FILE_TYPE::GFA) {
         std::map< std::string, std::string > nodes;
         std::map< std::string, std::vector< std::pair<std::string, bool> > > paths;
@@ -1103,7 +1103,7 @@ panmanUtils::Tree::Tree(std::ifstream& fin, std::ifstream& secondFin, FILE_TYPE 
         root = createTreeFromNewickString(newickString);
         auto start = std::chrono::high_resolution_clock::now();
 
-        panmanUtils::Pangraph pg(pangraphData, root);
+        panmanUtils::Pangraph pg(pangraphData, root, pgTreeGuided);
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::nanoseconds timing = end -start;
@@ -1406,11 +1406,13 @@ panmanUtils::Tree::Tree(std::ifstream& fin, std::ifstream& secondFin, FILE_TYPE 
                     int defaultState = -1;
 
                     for(const auto& u: individualSequences) {
-                        if(u.first.find(reference) != std::string::npos) {
-                            if(u.second[j].first != '-') {
-                                defaultState = (1 << getCodeFromNucleotide(u.second[j].first));
-                            } else {
-                                defaultState = 1;
+                        if(reference.length()) {
+                            if(u.first.find(reference) != std::string::npos) {
+                                if(u.second[j].first != '-') {
+                                    defaultState = (1 << getCodeFromNucleotide(u.second[j].first));
+                                } else {
+                                    defaultState = 1;
+                                }
                             }
                         }
 
@@ -6921,7 +6923,7 @@ std::vector< size_t > panmanUtils::GfaGraph::getTopologicalSort() {
 }
 
 
-panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* root) {
+panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* root, bool legacyChaining, bool pgTreeGuided) {
     try {
         size_t i;
         i=pangraphData["paths"].size();
@@ -6990,6 +6992,38 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
 
     }
 
+
+    std::vector<std::string> pathOrder;
+    {
+        std::set<std::string> added;
+        if (pgTreeGuided && root != nullptr) {
+            std::vector<panmanUtils::Node*> stack = {root};
+            while (!stack.empty()) {
+                panmanUtils::Node* node = stack.back();
+                stack.pop_back();
+                if (node->children.empty()) {
+                    if (paths.find(node->identifier) != paths.end() && added.insert(node->identifier).second) {
+                        pathOrder.push_back(node->identifier);
+                    }
+                    continue;
+                }
+                for (auto it = node->children.rbegin(); it != node->children.rend(); ++it) {
+                    stack.push_back(*it);
+                }
+            }
+            if (pathOrder.size() < paths.size()) {
+                std::cerr << "Warning: " << paths.size() - pathOrder.size()
+                          << " PanGraph path(s) are not leaves of the tree; adding them last" << std::endl;
+            }
+        }
+        for (const auto& p: paths) {
+            if (added.insert(p.first).second) {
+                pathOrder.push_back(p.first);
+            }
+        }
+        std::cout << "Adding paths in " << ((pgTreeGuided && root != nullptr) ? "guide-tree" : "hash") << " order" << std::endl;
+    }
+    
     // Rotation
     // Testing data structure
     std::unordered_map<std::string, std::vector<string>> test;
@@ -7000,7 +7034,8 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
         std::string sample_base_string;
 
         std::vector<std::string> sample_new = {};
-        for(const auto& p: paths) {
+        for(const auto& pathName: pathOrder) {
+            const auto& p = *paths.find(pathName);
             // std::cout << p.first << "\n";
 
             test[p.first] = p.second;
@@ -7080,6 +7115,10 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
     // Auto increment ID to assign to nodes
     numNodes = 0;
 
+    std::unordered_map<int, int> columnOccupancy;
+    std::vector<double> consensusWeights;
+    std::vector<double> sampleWeights;
+
     std::unordered_map<int,std::string> intToString; // Locally stored -> Later on mapped to intIdToStringId
     int seqCount = 0; // Current Sequence ID
     std::vector<std::string> consensus = {};
@@ -7090,7 +7129,8 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
     std::vector<int> intSequenceConsensusNew= {};
     
     std::cout << "Resolving rearrangements and duplications..." << std::endl;
-    for(const auto& p: paths) {
+    for(const auto& pathName: pathOrder) {
+        const auto& p = *paths.find(pathName);
         if (seqCount == 0) { // Load first sequence path
             for(const auto& block: p.second) {
                 consensus.push_back(block);
@@ -7098,6 +7138,7 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
                 intToString[numNodes] = block;
                 intSequences[p.first].push_back(numNodes);
                 intSequenceConsensus.push_back(numNodes);
+                columnOccupancy[numNodes]++;
                 numNodes++;
             }
             // std::cout << "Len of consensus: " << consensus.size() << std::endl;
@@ -7113,6 +7154,32 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
             }
             // std::cout << "\n";
 
+            if (!legacyChaining) {
+                consensusWeights.clear();
+                consensusWeights.reserve(intSequenceConsensus.size());
+                for (const auto &id: intSequenceConsensus) {
+                    consensusWeights.push_back(1.0 + std::log2(1.0 + (double)columnOccupancy[id]));
+                }
+                sampleWeights.clear();
+                sampleWeights.reserve(sample.size());
+                for (const auto &block: sample) {
+                    sampleWeights.push_back((double)std::max(1, blockSizeMap[block]));
+                }
+                if (circular && circularSequences.find(p.first) != circularSequences.end()) {
+                    // Re-pick the rotation of each circular path against the block layout built so far
+                    const size_t shift = bestRotationAgainstConsensus(consensus, sample, consensusWeights, sampleWeights);
+                    if (shift != 0) {
+                        std::rotate(sample.begin(), sample.begin() + shift, sample.end());
+                        std::rotate(sampleWeights.begin(), sampleWeights.begin() + shift, sampleWeights.end());
+                        std::rotate(strandPaths[p.first].begin(), strandPaths[p.first].begin() + shift, strandPaths[p.first].end());
+                        std::rotate(blockNumbers[p.first].begin(), blockNumbers[p.first].begin() + shift, blockNumbers[p.first].end());
+                        const int len = (int)sample.size();
+                        rotationIndexes[p.first] = ((rotationIndexes[p.first] - (int)shift) % len + len) % len;
+                        paths[p.first] = sample;
+                    }
+                }
+            }
+
             chain_align (consensus,
                          sample,
                          intSequenceConsensus,
@@ -7120,9 +7187,12 @@ panmanUtils::Pangraph::Pangraph(Json::Value& pangraphData, panmanUtils::Node* ro
                          numNodes,
                          consensus_new,
                          intSequenceConsensusNew,
-                         intToString);
+                         intToString,
+                         legacyChaining ? nullptr : &consensusWeights,
+                         legacyChaining ? nullptr : &sampleWeights);
             for (auto &b: intSequenceSample) {
                 intSequences[p.first].push_back(b);
+                columnOccupancy[b]++;
             }
             consensus.clear();
             intSequenceConsensus.clear();

@@ -7,6 +7,7 @@
 #include <utility>
 #include <limits>
 #include <chrono>
+#include <cmath>
 #include <tbb/task_scheduler_init.h>
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_sort.h>
@@ -282,6 +283,141 @@ void build_consensus (
     }
 }
 
+// Skipping column is free, as opposed to being penalized in chaining()
+// Select the colinear match sets with the highest summed weight: weight(i,j) = sampleWeights[j] * consensusWeights[i]
+// Sample weight is based on block length, and consensus weight is based on the number of paths already in the column.
+// Favors columns that give the most aligned bases and well-populated columns.
+std::vector<std::pair<int,int>> chainingWeighted (
+  const std::vector<std::string> &consensus,
+  const std::vector<std::string> &sample,
+  const std::vector<double> &consensusWeights,
+  const std::vector<double> &sampleWeights,
+  double *chainScore = nullptr
+) {
+  std::vector<std::pair<int,int>> chain;
+  const int n = (int)sample.size();
+  if (chainScore != nullptr) {
+    *chainScore = 0.0;
+  }
+  if (n == 0 || consensus.empty()) {
+    return chain;
+  }
+
+  std::unordered_map<std::string, std::vector<int>> samplePositions;
+  for (int j = 0; j < n; j++) {
+    samplePositions[sample[j]].push_back(j);
+  }
+
+  std::vector<double> treeScore(n + 1, 0.0);
+  std::vector<int> treePoint(n + 1, -1);
+
+  std::vector<std::pair<int,int>> points;
+  std::vector<int> parent;
+  std::vector<double> score;
+
+  int bestPoint = -1;
+  double bestScore = 0.0;
+
+  for (int i = 0; i < (int)consensus.size(); i++) {
+    auto it = samplePositions.find(consensus[i]);
+    if (it == samplePositions.end()) {
+      continue;
+    }
+    const double cw = consensusWeights.empty() ? 1.0 : consensusWeights[i];
+    const std::vector<int> &js = it->second;
+
+    for (int k = (int)js.size() - 1; k >= 0; k--) {
+      const int j = js[k];
+      double prev = 0.0;
+      int prevPoint = -1;
+      for (int x = j; x > 0; x -= x & -x) {
+        if (treePoint[x] != -1 && treeScore[x] > prev) {
+          prev = treeScore[x];
+          prevPoint = treePoint[x];
+        }
+      }
+      const double sw = sampleWeights.empty() ? 1.0 : sampleWeights[j];
+      const double current = prev + cw * sw;
+      const int id = (int)points.size();
+      points.emplace_back(i, j);
+      parent.push_back(prevPoint);
+      score.push_back(current);
+      if (current > bestScore) {
+        bestScore = current;
+        bestPoint = id;
+      }
+      for (int x = j + 1; x <= n; x += x & -x) {
+        if (treePoint[x] == -1 || current > treeScore[x]) {
+          treeScore[x] = current;
+          treePoint[x] = id;
+        }
+      }
+    }
+  }
+
+  for (int p = bestPoint; p != -1; p = parent[p]) {
+      chain.push_back(points[p]);
+  }
+  if (chainScore != nullptr) {
+      *chainScore = bestScore;
+  }
+  return chain;
+}
+
+
+// Selected the rotation of a circular path that chains best against the running block consensus.
+size_t bestRotationAgainstConsensus (
+  const std::vector<std::string> &consensus,
+  const std::vector<std::string> &sample,
+  const std::vector<double> &consensusWeights,
+  const std::vector<double> &sampleWeights
+) {
+  const size_t n = sample.size();
+  if (n < 2 || consensus.empty()) {
+      return 0;
+  }
+  std::vector<std::string> doubled(sample);
+  doubled.insert(doubled.end(), sample.begin(), sample.end());
+  std::vector<double> doubledWeights(sampleWeights);
+  doubledWeights.insert(doubledWeights.end(), sampleWeights.begin(), sampleWeights.end());
+
+  // use the same scoring as the main chaining function
+  std::vector<std::pair<int,int>> chain = chainingWeighted(consensus, doubled, consensusWeights, doubledWeights);
+  if (chain.empty()) {
+      return 0;
+  }
+  std::vector<double> anchorWeight(2 * n, 0.0);
+
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      anchorWeight[it->second] += consensusWeights[it->first] * doubledWeights[it->second];
+  }
+  std::vector<double> prefix(2 * n + 1, 0.0);
+  for (size_t j = 0; j < 2 * n; j++) {
+      prefix[j + 1] = prefix[j] + anchorWeight[j];
+  }
+  size_t bestShift = 0;
+  double bestWindow = prefix[n] - prefix[0];
+  for (size_t shift = 1; shift < n; shift++) {
+      const double window = prefix[shift + n] - prefix[shift];
+      if (window > bestWindow + 1e-9) {
+          bestWindow = window;
+          bestShift = shift;
+      }
+  }
+  if (bestShift == 0) {
+      return 0;
+  }
+
+  double currentScore = 0.0, rotatedScore = 0.0;
+  chainingWeighted(consensus, sample, consensusWeights, sampleWeights, &currentScore);
+  std::vector<std::string> rotated(sample.begin() + bestShift, sample.end());
+  rotated.insert(rotated.end(), sample.begin(), sample.begin() + bestShift);
+  std::vector<double> rotatedWeights(sampleWeights.begin() + bestShift, sampleWeights.end());
+  rotatedWeights.insert(rotatedWeights.end(), sampleWeights.begin(), sampleWeights.begin() + bestShift);
+  chainingWeighted(consensus, rotated, consensusWeights, rotatedWeights, &rotatedScore);
+  return (rotatedScore > currentScore + 1e-9) ? bestShift : 0;
+}
+
 void chain_align (
     std::vector<std::string> &consensus,
     std::vector<std::string> &sample,
@@ -290,12 +426,16 @@ void chain_align (
     size_t &numBlocks,
     std::vector<std::string> &consensus_new,
     std::vector<int> &intSequenceConsensus_new,
-    std::unordered_map<int,std::string> &intToString
+    std::unordered_map<int,std::string> &intToString,
+    const std::vector<double> *consensusWeights = nullptr,
+    const std::vector<double> *sampleWeights = nullptr
 ) {
     // cout << "Entering chain Alignment Function\n";
     // if (consensus.size() != 0)
     {
-        std::vector<std::pair<int,int>> chain = chaining(consensus, sample);
+        std::vector<std::pair<int,int>> chain = (consensusWeights != nullptr && sampleWeights != nullptr)
+            ? chainingWeighted(consensus, sample, *consensusWeights, *sampleWeights)
+            : chaining(consensus, sample);
         build_consensus (chain,
                          consensus,
                          sample,

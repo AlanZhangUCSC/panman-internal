@@ -487,7 +487,7 @@ class Tree {
     Tree(const panmanOld::tree& mainTree);
     Tree(std::istream& fin, FILE_TYPE ftype = FILE_TYPE::PANMAT);
     Tree(std::ifstream& fin, std::ifstream& secondFin,
-         FILE_TYPE ftype = FILE_TYPE::GFA, std::string reference = "", std::string refSeqFile = "");
+         FILE_TYPE ftype = FILE_TYPE::GFA, std::string reference = "", std::string refSeqFile = "", bool legacyChaining = false, bool pgTreeGuided = true);
 
     // Copy blocks from current tree into new tree which is rooted at one of the internal
     // nodes of the current tree. Used in split for PanMAN
