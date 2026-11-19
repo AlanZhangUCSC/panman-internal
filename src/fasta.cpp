@@ -2119,7 +2119,7 @@ void panmanUtils::Tree::printFASTAUltraFast(std::ostream& fout, bool aligned, bo
         std::lock_guard<std::mutex> guard(printMutex);
         fout << line << "\n";
         // nodeMutexes[node->identifier].unlock();
-        break;
+        // break;
     // });
     }
 }
